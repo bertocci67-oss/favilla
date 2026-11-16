@@ -2,6 +2,12 @@ plugins {
     id 'com.android.application'
 }
 
+// CI generates a throwaway keystore (see .github/workflows/apk.yml) and points these
+// variables at it. Without them the build still runs, but produces an unsigned APK that
+// Android refuses to install.
+def keystorePath = System.getenv('FAVILLA_KEYSTORE')
+def hasKeystore = keystorePath != null && !keystorePath.isEmpty() && file(keystorePath).exists()
+
 android {
     namespace 'app.favilla'
     compileSdk 34
@@ -14,10 +20,21 @@ android {
         versionName '1.0'
     }
 
+    signingConfigs {
+        if (hasKeystore) {
+            release {
+                storeFile file(keystorePath)
+                storePassword System.getenv('FAVILLA_STORE_PASS')
+                keyAlias System.getenv('FAVILLA_KEY_ALIAS')
+                keyPassword System.getenv('FAVILLA_KEY_PASS')
+            }
+        }
+    }
+
     buildTypes {
         release {
             minifyEnabled false
-            signingConfig signingConfigs.debug
+            if (hasKeystore) signingConfig signingConfigs.release
         }
     }
 

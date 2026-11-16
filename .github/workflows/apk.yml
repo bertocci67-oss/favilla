@@ -25,9 +25,32 @@ jobs:
         with:
           gradle-version: '8.7'
 
+      # A fresh key per build: nothing secret to store, and the APK is installable.
+      # An app update needs the same key, so uninstall before installing a newer build.
+      - name: Keystore
+        run: |
+          PASS=$(openssl rand -hex 12)
+          keytool -genkeypair -v \
+            -keystore "$RUNNER_TEMP/favilla.jks" \
+            -storepass "$PASS" -keypass "$PASS" \
+            -alias favilla -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname "CN=Favilla, O=Favilla, C=IT"
+          {
+            echo "FAVILLA_KEYSTORE=$RUNNER_TEMP/favilla.jks"
+            echo "FAVILLA_STORE_PASS=$PASS"
+            echo "FAVILLA_KEY_ALIAS=favilla"
+            echo "FAVILLA_KEY_PASS=$PASS"
+          } >> "$GITHUB_ENV"
+
       - name: Build
         working-directory: android
         run: gradle assembleRelease --no-daemon --stacktrace
+
+      - name: Verify signature
+        run: |
+          APKSIGNER=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)/apksigner
+          "$APKSIGNER" verify --print-certs \
+            android/app/build/outputs/apk/release/app-release.apk
 
       - name: Collect the APK
         run: cp android/app/build/outputs/apk/release/app-release.apk Favilla.apk
