@@ -1,21 +1,28 @@
 package app.favilla;
 
 import android.annotation.SuppressLint;
+import android.annotation.TargetApi;
 import android.app.Activity;
 import android.content.Intent;
 import android.graphics.Color;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.view.View;
 import android.view.ViewGroup;
 import android.webkit.CookieManager;
+import android.webkit.RenderProcessGoneDetail;
 import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
+import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.FrameLayout;
 import android.widget.ProgressBar;
+import android.widget.Toast;
 
 /**
  * Favilla runs as a web app: the model is downloaded and executed inside the page by
@@ -29,12 +36,22 @@ public class MainActivity extends Activity {
             "https://site-3c4b410fa82a4937a3a270ac92de0e41.freebuff.page/";
     private static final String RETRY_URL = "favilla://retry";
     private static final int BG = Color.rgb(20, 20, 19);
+    private static final long PAGE_TIMEOUT_MS = 25000;
 
+    private FrameLayout root;
     private WebView web;
     private ProgressBar bar;
     private boolean offline = false;
+    private boolean pageReady = false;
 
-    @SuppressLint("SetJavaScriptEnabled")
+    private final Handler handler = new Handler(Looper.getMainLooper());
+    private final Runnable pageTimeout = new Runnable() {
+        @Override
+        public void run() {
+            if (!pageReady) showOffline();
+        }
+    };
+
     @Override
     protected void onCreate(Bundle state) {
         super.onCreate(state);
@@ -42,9 +59,21 @@ public class MainActivity extends Activity {
         getWindow().setStatusBarColor(BG);
         getWindow().setNavigationBarColor(BG);
 
-        FrameLayout root = new FrameLayout(this);
+        root = new FrameLayout(this);
         root.setBackgroundColor(BG);
 
+        bar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+        bar.setIndeterminate(true);
+        root.addView(bar, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 6));
+
+        setContentView(root);
+        installWebView();
+        loadStart();
+    }
+
+    @SuppressLint("SetJavaScriptEnabled")
+    private void installWebView() {
         web = new WebView(this);
         web.setBackgroundColor(BG);
 
@@ -54,18 +83,10 @@ public class MainActivity extends Activity {
         s.setDatabaseEnabled(true);
         s.setLoadWithOverviewMode(true);
         s.setUseWideViewPort(true);
+        s.setBuiltInZoomControls(false);
+        s.setDisplayZoomControls(false);
         s.setCacheMode(WebSettings.LOAD_DEFAULT);
         s.setMediaPlaybackRequiresUserGesture(false);
-
-        bar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
-        bar.setIndeterminate(true);
-
-        FrameLayout.LayoutParams webParams = new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
-        FrameLayout.LayoutParams barParams = new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, 6);
-        root.addView(web, webParams);
-        root.addView(bar, barParams);
 
         web.setWebViewClient(new WebViewClient() {
             @Override
@@ -73,9 +94,7 @@ public class MainActivity extends Activity {
                 Uri url = request.getUrl();
 
                 if (RETRY_URL.equals(url.toString())) {
-                    offline = false;
-                    bar.setVisibility(View.VISIBLE);
-                    web.loadUrl(START_URL);
+                    loadStart();
                     return true;
                 }
 
@@ -96,7 +115,16 @@ public class MainActivity extends Activity {
             }
 
             @Override
+            public void onPageStarted(WebView view, String url, android.graphics.Bitmap icon) {
+                pageReady = false;
+                bar.setVisibility(View.VISIBLE);
+            }
+
+            @Override
             public void onPageFinished(WebView view, String url) {
+                pageReady = true;
+                offline = false;
+                handler.removeCallbacks(pageTimeout);
                 bar.setVisibility(View.GONE);
             }
 
@@ -105,17 +133,36 @@ public class MainActivity extends Activity {
                                         WebResourceError error) {
                 if (request.isForMainFrame()) showOffline();
             }
+
+            @Override
+            public void onReceivedHttpError(WebView view, WebResourceRequest request,
+                                           WebResourceResponse response) {
+                if (request.isForMainFrame() && response != null
+                        && response.getStatusCode() >= 500) {
+                    showOffline();
+                }
+            }
         });
 
         CookieManager.getInstance().setAcceptCookie(true);
-        setContentView(root);
-        web.loadUrl(START_URL);
+        root.addView(web, 0, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+    }
+
+    private void loadStart() {
+        offline = false;
+        pageReady = false;
+        bar.setVisibility(View.VISIBLE);
+        handler.removeCallbacks(pageTimeout);
+        handler.postDelayed(pageTimeout, PAGE_TIMEOUT_MS);
+        if (web != null) web.loadUrl(START_URL);
     }
 
     /** First run needs the network for the model download; say so instead of a blank page. */
     private void showOffline() {
-        if (offline) return;
+        if (offline || web == null) return;
         offline = true;
+        bar.setVisibility(View.GONE);
         String html = "<html><head><meta name='viewport' content='width=device-width,initial-scale=1'>"
                 + "<style>body{background:#141413;color:#ecebe4;font-family:system-ui,sans-serif;"
                 + "padding:56px 24px;text-align:center;line-height:1.6}"
@@ -127,6 +174,24 @@ public class MainActivity extends Activity {
                 + "<p>Serve una connessione: al primo avvio il modello viene scaricato nel telefono.</p>"
                 + "<a href='favilla://retry'>Riprova</a></body></html>";
         web.loadDataWithBaseURL(START_URL, html, "text/html", "utf-8", null);
+    }
+
+    /**
+     * A big model on a small phone can kill the WebView renderer (out of memory). Without
+     * this the whole app disappears; here the page is rebuilt and the chat comes back.
+     */
+    @TargetApi(Build.VERSION_CODES.O)
+    @Override
+    public boolean onRenderProcessGone(WebView view, RenderProcessGoneDetail detail) {
+        if (view == web) {
+            root.removeView(view);
+            view.destroy();
+            web = null;
+            installWebView();
+            Toast.makeText(this, "Memoria esaurita: ricarico Favilla", Toast.LENGTH_LONG).show();
+            loadStart();
+        }
+        return true;
     }
 
     @Override
@@ -160,7 +225,9 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        handler.removeCallbacks(pageTimeout);
         if (web != null) {
+            root.removeView(web);
             web.loadUrl("about:blank");
             web.destroy();
             web = null;
