@@ -142,6 +142,17 @@ public class MainActivity extends Activity {
                     showOffline();
                 }
             }
+
+            /**
+             * A big model on a small phone can kill the WebView renderer (out of memory).
+             * Without this the whole app disappears; here the page is rebuilt.
+             */
+            @TargetApi(Build.VERSION_CODES.O)
+            @Override
+            public boolean onRenderProcessGone(WebView view, RenderProcessGoneDetail detail) {
+                recoverRenderer(view);
+                return true;
+            }
         });
 
         CookieManager.getInstance().setAcceptCookie(true);
@@ -176,22 +187,13 @@ public class MainActivity extends Activity {
         web.loadDataWithBaseURL(START_URL, html, "text/html", "utf-8", null);
     }
 
-    /**
-     * A big model on a small phone can kill the WebView renderer (out of memory). Without
-     * this the whole app disappears; here the page is rebuilt and the chat comes back.
-     */
-    @TargetApi(Build.VERSION_CODES.O)
-    @Override
-    public boolean onRenderProcessGone(WebView view, RenderProcessGoneDetail detail) {
-        if (view == web) {
-            root.removeView(view);
-            view.destroy();
-            web = null;
-            installWebView();
-            Toast.makeText(this, "Memoria esaurita: ricarico Favilla", Toast.LENGTH_LONG).show();
-            loadStart();
-        }
-        return true;
+    private void recoverRenderer(WebView dead) {
+        root.removeView(dead);
+        dead.destroy();
+        web = null;
+        installWebView();
+        Toast.makeText(this, "Memoria esaurita: ricarico Favilla", Toast.LENGTH_LONG).show();
+        loadStart();
     }
 
     @Override
